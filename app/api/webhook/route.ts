@@ -1,7 +1,7 @@
 /**
  * Local test (no Twilio account needed):
  *
- * curl -X POST http://localhost:3000/api/webhook \
+ * curl -X POST http://localhost:3004/api/webhook \
  *   -H "Content-Type: application/x-www-form-urlencoded" \
  *   -d "From=+15551234567" \
  *   -d "To=+15557654321" \
@@ -81,6 +81,11 @@ function normalizePracticalQuestion(
   }
   // Hard fallback to guarantee the required question.
   return "Does a friend have one you can borrow?";
+}
+
+/** Twilio and some consoles probe the webhook with GET when saving; POST handles real SMS. */
+export async function GET() {
+  return new Response("ok", { status: 200 });
 }
 
 export async function POST(req: Request) {

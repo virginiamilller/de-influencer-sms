@@ -30,24 +30,24 @@ Get a key from [Google AI Studio](https://aistudio.google.com/).
 npm run dev
 ```
 
-Open the URL Next prints (often `http://localhost:3000`). If port 3000 is busy, Next uses **3001** (or another free port)—use that port in the URLs below.
+Open the URL Next prints. Examples below use **`http://localhost:3004`**; if your terminal shows a different port (3000, 3001, etc.), use **that** port everywhere—`curl`, `cloudflared`, and mental checks must match.
 
 ## Check Gemini
 
 With the dev server running:
 
 ```bash
-curl -sS http://localhost:3000/api/health/gemini
+curl -sS http://localhost:3004/api/health/gemini
 ```
 
-Replace `3000` with your port if needed. A working key returns JSON with `"ok": true`.
+A working key returns JSON with `"ok": true`.
 
 ## Test the SMS webhook (no Twilio required)
 
 The webhook accepts `application/x-www-form-urlencoded` body fields like Twilio sends (`From`, `Body`, optional `MediaUrl0`). Example with a public test image:
 
 ```bash
-curl -X POST http://localhost:3000/api/webhook \
+curl -X POST http://localhost:3004/api/webhook \
   -H "Content-Type: application/x-www-form-urlencoded" \
   -d "From=+15551234567" \
   -d "To=+15557654321" \
@@ -55,6 +55,34 @@ curl -X POST http://localhost:3000/api/webhook \
 ```
 
 Response is **TwiML** XML with a `<Message>` body. Omit `MediaUrl0` to exercise text-only conversation mode for that `From` number.
+
+## Expose localhost for Twilio (cloudflared)
+
+Twilio needs a **public HTTPS** URL to POST webhooks. For local dev, use [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) (`cloudflared`)—no ngrok required.
+
+1. Install (macOS):
+
+   ```bash
+   brew install cloudflared
+   ```
+
+2. Start Next.js (`npm run dev`) and note the port (this project’s examples assume **3004**).
+
+3. In another terminal, run a **quick tunnel** to that port:
+
+   ```bash
+   cloudflared tunnel --url http://localhost:3004
+   ```
+
+   The port here must match whatever Next printed (e.g. `Local: http://localhost:3004`).
+
+4. `cloudflared` prints a **trycloudflare.com** HTTPS URL. In **Twilio Console → Phone Numbers → your number → Messaging**, set **A message comes in** to **Webhook** (HTTP POST) and use:
+
+   `https://<your-subdomain>.trycloudflare.com/api/webhook`
+
+5. Save in Twilio. Send an SMS to your Twilio number to test.
+
+Quick tunnels get a **new URL each time** you restart `cloudflared`; update Twilio when it changes. For a stable hostname, set up a [named tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/get-started/create-local-tunnel/) in the Cloudflare dashboard.
 
 ## Twilio in production
 

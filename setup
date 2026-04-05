@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Local dev + tunnel helper: starts Next.js, then cloudflared, prints Twilio webhook URL.
+# Run from project root: ./setup   or   npm run setup
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+G="\033[0;32m"
+D="\033[0;90m"
+B="\033[1m"
+X="\033[0m"
+
+TWILIO_CONFIGURE_URL="${TWILIO_CONFIGURE_URL:-https://console.twilio.com/us1/develop/phone-numbers/manage/incoming/PNbfc12250e1031c324f0da0507537068f/configure}"
+
+NEXT_LOG="$(mktemp -t de-influencer-next.XXXXXX)"
+CF_LOG="$(mktemp -t de-influencer-cf.XXXXXX)"
+NEXT_PID=""
+CF_PID=""
+
+cleanup() {
+  if [[ -n "${CF_PID}" ]] && kill -0 "${CF_PID}" 2>/dev/null; then
+    kill "${CF_PID}" 2>/dev/null || true
+  fi
+  if [[ -n "${NEXT_PID}" ]] && kill -0 "${NEXT_PID}" 2>/dev/null; then
+    kill "${NEXT_PID}" 2>/dev/null || true
+  fi
+  rm -f "${NEXT_LOG}" "${CF_LOG}"
+}
+trap cleanup EXIT INT TERM
+
+echo ""
+echo -e "${B}De-Influencer SMS — setup${X}"
+echo -e "${D}────────────────────────────────────────${X}"
+echo ""
+
+if ! command -v cloudflared &>/dev/null; then
+  echo "Install cloudflared first: brew install cloudflared" >&2
+  exit 1
+fi
+
+# ── Step 1 ─────────────────────────────────────────────────
+echo -e "${D}Step 1:${X} Starting Next.js dev server…"
+npm run dev >"${NEXT_LOG}" 2>&1 &
+NEXT_PID=$!
+
+PORT=""
+for _ in $(seq 1 90); do
+  if grep -q "Ready" "${NEXT_LOG}" 2>/dev/null; then
+    PORT="$(grep -E 'Local:.*localhost:[0-9]+' "${NEXT_LOG}" | tail -1 | grep -oE '[0-9]+$' || true)"
+    if [[ -n "${PORT}" ]]; then
+      break
+    fi
+  fi
+  sleep 1
+done
+
+if [[ -z "${PORT}" ]]; then
+  echo -e "  ${G}●${X} ${B}Failed:${X} could not detect port. Last log lines:"
+  tail -20 "${NEXT_LOG}"
+  exit 1
+fi
+
+echo -e "  ${G}●${X} Dev server ${B}ready${X} → ${B}http://localhost:${PORT}${X}"
+echo -e "  ${B}Port:${X} ${PORT}   ${D}(Next.js is listening here — use this for local curl and for cloudflared.)${X}"
+echo ""
+
+# ── Step 2 ─────────────────────────────────────────────────
+echo -e "${D}Step 2:${X} Starting cloudflared tunnel to port ${PORT}…"
+cloudflared tunnel --url "http://127.0.0.1:${PORT}" >"${CF_LOG}" 2>&1 &
+CF_PID=$!
+
+# Don’t match only "trycloudflare.com" — cloudflared logs that phrase *before* the https URL exists,
+# and `grep` exiting 1 inside $(...) would abort the whole script under `set -e`.
+TUNNEL_URL=""
+for _ in $(seq 1 45); do
+  TUNNEL_URL="$(grep -oE 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' "${CF_LOG}" 2>/dev/null | head -1 || true)"
+  if [[ -n "${TUNNEL_URL}" ]]; then
+    break
+  fi
+  sleep 1
+done
+
+if [[ -z "${TUNNEL_URL}" ]]; then
+  echo -e "  ${G}●${X} ${B}Failed:${X} no tunnel URL. cloudflared log:"
+  tail -30 "${CF_LOG}"
+  exit 1
+fi
+
+WEBHOOK_URL="${TUNNEL_URL}/api/webhook"
+echo -e "  ${G}●${X} Tunnel ${B}ready${X} → ${B}${TUNNEL_URL}${X}"
+echo ""
+echo -e "${B}cloudflared${X} ${D}(banner from the tunnel — public base URL Twilio should use + /api/webhook):${X}"
+# Same boxed block cloudflared prints (top rule, “quick Tunnel…”, https URL, bottom rule).
+CF_BANNER="$(grep -E -B1 -A3 'Your quick Tunnel has been created' "${CF_LOG}" 2>/dev/null | sed 's/^[^ ]* [^ ]* //' || true)"
+if [[ -n "${CF_BANNER// }" ]]; then
+  while IFS= read -r line; do
+    [[ -z "${line// }" ]] && continue
+    echo -e "  ${D}${line}${X}"
+  done <<< "${CF_BANNER}"
+else
+  echo -e "  ${D}|  Your quick Tunnel has been created! Visit it at:${X}"
+  echo -e "  ${D}|  ${TUNNEL_URL}${X}"
+fi
+echo ""
+
+# ── Step 3 ─────────────────────────────────────────────────
+echo -e "${D}Step 3:${X} Twilio — paste this webhook (HTTP POST):"
+echo ""
+echo -e "  ${B}${WEBHOOK_URL}${X}"
+echo ""
+echo -e "${D}Opening Twilio configure page in your browser…${X}"
+if [[ "$(uname -s)" == "Darwin" ]] && command -v open &>/dev/null; then
+  open "${TWILIO_CONFIGURE_URL}"
+else
+  echo -e "${D}Open:${X} ${TWILIO_CONFIGURE_URL}"
+fi
+echo -e "  ${G}●${X} Under ${B}A message comes in${X} → ${B}Webhook${X}, paste the URL above and save."
+echo ""
+echo -e "${D}────────────────────────────────────────${X}"
+echo -e "${G}●${X} ${B}All checks passed.${X} Servers keep running in this terminal."
+echo -e "    ${D}Logs:${X} next → ${NEXT_LOG}  ·  cloudflared → ${CF_LOG}"
+echo -e "    ${D}Stop:${X} ${B}Ctrl+C${X} (stops Next + cloudflared)"
+echo ""
+
+wait
