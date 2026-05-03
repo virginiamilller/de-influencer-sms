@@ -4,6 +4,10 @@ export default function PrivacyPolicy() {
       <h1>Privacy Policy</h1>
       <p><strong>Last updated: April 8, 2026</strong></p>
       <p>De-Influencer SMS ("we", "us") is a personal hobby project that helps users avoid impulse purchases via SMS.</p>
+      <p>
+        For messaging program details, frequency, and opt-in instructions, see our{" "}
+        <a href="/sms">SMS information page</a>.
+      </p>
       <h2>What we collect</h2>
       <p>We collect your phone number and the text messages you send us in order to respond to your messages. If you send a photo, we process it to identify the item.</p>
       <h2>How we use it</h2>
