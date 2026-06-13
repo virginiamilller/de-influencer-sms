@@ -1,7 +1,7 @@
 /**
  * Local test (no Twilio account needed):
  *
- * curl -X POST http://localhost:3004/api/webhook \
+ * curl -X POST http://localhost:3000/api/webhook \
  *   -H "Content-Type: application/x-www-form-urlencoded" \
  *   -d "From=+15551234567" \
  *   -d "To=+15557654321" \
@@ -33,6 +33,41 @@ type GeminiRoastJson = {
     | "Does a friend have one you can borrow?"
     | "Can you rent this?";
 };
+
+/**
+ * CONTENT MODERATION
+ * Check for profanity, inappropriate language, rude tone
+ */
+function containsInappropriateContent(text: string): boolean {
+  const profanityPatterns = [
+    /\bf[*u]ck/i,
+    /\bsh[*i]t/i,
+    /\bass\b/i,
+    /\bdamn/i,
+    /\bhell\b/i,
+    /\bcrap/i,
+    /\bpiss/i,
+    /\bcock/i,
+    /\bslut/i,
+    /\bbitch/i,
+    /\bwhore/i,
+    /\bgodd[*a]mn/i,
+  ];
+
+  const rudePatterns = [
+    /you suck/i,
+    /you're stupid/i,
+    /you're dumb/i,
+    /i hate you/i,
+    /go away/i,
+    /screw you/i,
+    /f\*\*\* off/i,
+    /f\*\*\* you/i,
+  ];
+
+  const allPatterns = [...profanityPatterns, ...rudePatterns];
+  return allPatterns.some((pattern) => pattern.test(text));
+}
 
 function escapeXml(input: string) {
   return input
@@ -96,6 +131,47 @@ export async function POST(req: Request) {
 
   if (!from) return new Response("Missing From", { status: 400 });
 
+  // ============================================
+  // SAFETY CHECK #1: Profanity/Rude Language
+  // ============================================
+  if (body && containsInappropriateContent(body)) {
+    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>${escapeXml("Try asking me about something you're thinking of buying! 👔")}</Message>
+</Response>`;
+    return new Response(twiml, {
+      headers: { "Content-Type": "text/xml; charset=utf-8" },
+    });
+  }
+
+  // ============================================
+  // SAFETY CHECK #2: Random/Off-Topic Text
+  // ============================================
+  if (!mediaUrl && body) {
+    const trimmedBody = body.trim().toLowerCase();
+    const randomTopicPatterns = [
+      /^(hi|hello|hey|what's up|yo|sup)$/,
+      /^test/,
+      /^does this work/,
+      /^help/,
+      /^spam|test|random/,
+    ];
+
+    const isRandomTopic = randomTopicPatterns.some((pattern) =>
+      pattern.test(trimmedBody),
+    );
+
+    if (isRandomTopic && trimmedBody.length < 10) {
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>${escapeXml("Try asking me about something you're thinking of buying! 👔")}</Message>
+</Response>`;
+      return new Response(twiml, {
+        headers: { "Content-Type": "text/xml; charset=utf-8" },
+      });
+    }
+  }
+
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     return new Response("Missing GEMINI_API_KEY", { status: 500 });
@@ -106,6 +182,24 @@ export async function POST(req: Request) {
 
   const basePrompt = `
 You are generating an SMS roast from a de-influencer perspective.
+
+⚠️ SAFETY CHECKS (DO THESE FIRST):
+1. Verify the image is a product/retail item (not a meme, selfie, random photo)
+2. Verify the product is FASHION/CLOTHING (dress, shoes, bag, jacket, accessories, etc.)
+   - If it's NOT fashion (electronics, furniture, food, car, etc.) → REJECT with safety message
+3. If the message contains profanity, rudeness, or is off-topic → REJECT with safety message
+
+SAFETY REJECTION MESSAGE (use ONLY if checks fail):
+{
+  "item": "REJECTED",
+  "guessedPrice": 0,
+  "amountSaved": 0,
+  "sandra": "",
+  "aziz": "Try asking me about something you're thinking of buying! 👔",
+  "practicalQuestion": "Can you rent this?"
+}
+
+IF ALL SAFETY CHECKS PASS, proceed with the roast:
 
 TASK:
 1) Identify the item in the photo (best guess).
@@ -148,7 +242,14 @@ Return STRICT JSON only (no markdown, no extra keys, no extra text) with exactly
     const convoPrompt = `
 You are the "De-Influencer SMS" persona: 50% Sandra Hüller (logical/existential) and 50% Aziz Ansari (high-energy/observational).
 
-The user may ask if they should buy something.
+⚠️ SAFETY CHECKS FIRST:
+- If the user message contains profanity, is rude, or is off-topic (not about buying fashion items)
+  → Respond with ONLY: "Try asking me about something you're thinking of buying! 👔"
+- If they're asking about non-fashion items (electronics, furniture, food, etc.)
+  → Respond with ONLY: "Try asking me about something you're thinking of buying! 👔"
+
+IF MESSAGE PASSES SAFETY CHECKS:
+The user may ask if they should buy something (fashion/clothing related).
 - Respond with a split voice (Sandra paragraph then Aziz paragraph).
 - Ask ONE practical question at the end: either "Does a friend have one you can borrow?" or "Can you rent this?"
 - If you need a photo to identify the exact item, ask them to send a photo next.
@@ -205,6 +306,20 @@ Keep it SMS-length.
     const rawText = result.response.text();
     const parsed = parseGeminiJson(rawText);
 
+    // ============================================
+    // SAFETY CHECK #3: Non-Fashion Items
+    // ============================================
+    // If Gemini detects a REJECTED item, it will return item: "REJECTED"
+    if (parsed?.item === "REJECTED") {
+      const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Message>${escapeXml("Try asking me about something you're thinking of buying! 👔")}</Message>
+</Response>`;
+      return new Response(twiml, {
+        headers: { "Content-Type": "text/xml; charset=utf-8" },
+      });
+    }
+
     const practicalQuestion = normalizePracticalQuestion(
       parsed?.practicalQuestion,
     );
@@ -246,4 +361,3 @@ Keep it SMS-length.
     headers: { "Content-Type": "text/xml; charset=utf-8" },
   });
 }
-
