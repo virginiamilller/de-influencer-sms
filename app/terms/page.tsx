@@ -1,21 +1,143 @@
-export default function Terms() {
+// Save this file to: app/terms/page.tsx
+
+export default function TermsOfService() {
   return (
-    <main style={{ maxWidth: 680, margin: "0 auto", padding: "40px 20px", fontFamily: "system-ui, sans-serif", lineHeight: 1.6 }}>
-      <h1>Terms and Conditions</h1>
-      <p><strong>Last updated: April 8, 2026</strong></p>
-      <p>By texting De-Influencer SMS, you agree to these terms.</p>
-      <h2>Program description</h2>
-      <p>De-Influencer SMS is a personal hobby project. Text us any item you're thinking of buying and we'll send back a humorous response to help you think twice.</p>
-      <h2>Message frequency</h2>
-      <p>Message frequency varies based on your interaction. You will only receive messages in response to ones you send.</p>
-      <h2>Rates</h2>
-      <p>Message and data rates may apply depending on your carrier and plan.</p>
-      <h2>Opt-out</h2>
-      <p>Reply <strong>STOP</strong> at any time to unsubscribe. You will receive one confirmation message and no further messages.</p>
-      <h2>Help</h2>
-      <p>Reply <strong>HELP</strong> for help. You can also email: virginia@virginiamiller.com</p>
-      <h2>Disclaimer</h2>
-      <p>This is a hobby project. Responses are AI-generated and for entertainment purposes only.</p>
-    </main>
+    <div className="max-w-3xl mx-auto px-4 py-12">
+      <h1 className="text-4xl font-bold mb-8">Terms of Service</h1>
+
+      <div className="prose prose-lg space-y-6">
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">1. Agreement to Terms</h2>
+          <p>
+            By using De-Influencer SMS, you agree to comply with and be bound by these Terms of Service.
+            If you do not agree to these terms, do not use this service.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">2. Service Description</h2>
+          <p>
+            De-Influencer SMS is an SMS-based service that provides humorous and practical feedback on
+            impulse purchases. Users send photos and/or messages about items they're considering buying,
+            and receive de-influencer roasts along with practical alternatives (borrowing, renting, thrifting).
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">3. User Consent & Opt-In</h2>
+          <p>
+            By texting a photo and/or message about an item to De-Influencer SMS, you explicitly consent
+            to receive SMS messages in response. You acknowledge that you are opting into receive messages
+            and agree to these Terms of Service.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">4. Message and Data Rates</h2>
+          <p>
+            <strong>Message and data rates may apply.</strong> Standard SMS rates from your wireless carrier
+            will be charged for all messages sent and received. De-Influencer SMS is not responsible for any
+            charges incurred by your wireless provider.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">5. Message Frequency</h2>
+          <p>
+            Message frequency varies based on user engagement and activity. Users will receive responses
+            based on the frequency they send messages to De-Influencer SMS. This is not a fixed-schedule
+            subscription service.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">6. Opt-Out Instructions</h2>
+          <p>
+            To stop receiving messages from De-Influencer SMS, reply STOP to any message. We will honor
+            opt-out requests immediately and remove you from our messaging list. You will receive a
+            confirmation message that you have been unsubscribed.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">7. Help & Support</h2>
+          <p>
+            To receive help information, reply HELP to any message. For additional support or questions,
+            email us at vmiller@renttherunway.com.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">8. Use of Service</h2>
+          <p>
+            Users agree to use De-Influencer SMS for lawful purposes only. Users will not:
+          </p>
+          <ul className="list-disc pl-6 space-y-2">
+            <li>Send offensive, abusive, or threatening content</li>
+            <li>Attempt to misuse or abuse the service</li>
+            <li>Share the service phone number for spam or harassment</li>
+            <li>Send content that violates any laws or regulations</li>
+          </ul>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">9. Content & Intellectual Property</h2>
+          <p>
+            All responses generated by De-Influencer SMS are provided for entertainment and informational
+            purposes. You retain ownership of any photos or messages you send. De-Influencer SMS retains
+            the right to use aggregated, anonymized data for service improvement.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">10. Limitation of Liability</h2>
+          <p>
+            De-Influencer SMS is provided on an &quot;as-is&quot; basis. We make no warranties about the accuracy,
+            completeness, or reliability of our responses. De-Influencer SMS shall not be liable for any
+            indirect, incidental, special, or consequential damages arising from use of this service.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">11. Privacy</h2>
+          <p>
+            Your use of De-Influencer SMS is also governed by our Privacy Policy. Please review our
+            Privacy Policy at https://de-influencer-sms.vercel.app/privacy to understand our practices.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">12. Changes to Terms</h2>
+          <p>
+            We reserve the right to modify these Terms of Service at any time. Changes will be effective
+            when posted. Your continued use of the service constitutes acceptance of any changes.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">13. Termination</h2>
+          <p>
+            We reserve the right to terminate or suspend access to De-Influencer SMS at any time for
+            violation of these terms or for any other reason. Opt-out via STOP to cease all messages.
+          </p>
+        </section>
+
+        <section>
+          <h2 className="text-2xl font-semibold mb-4">14. Contact Information</h2>
+          <p>
+            For questions about these Terms of Service, please contact:
+          </p>
+          <p className="mt-2">
+            Email: vmiller@renttherunway.com
+          </p>
+        </section>
+
+        <section className="mt-8 pt-8 border-t">
+          <p className="text-sm text-gray-600">
+            Last Updated: June 2026
+          </p>
+        </section>
+      </div>
+    </div>
   );
 }
