@@ -1,186 +1,60 @@
 /**
- * Local test (no Twilio account needed):
+ * Twilio inbound SMS webhook.
  *
- * curl -X POST http://localhost:3000/api/webhook \
+ * Local test (set TWILIO_SKIP_SIGNATURE_CHECK=1 in .env.local; signature checks are skipped
+ * only outside NODE_ENV=production). Send START first so the number is opted in:
+ *
+ * curl -X POST http://localhost:3004/api/webhook \
  *   -H "Content-Type: application/x-www-form-urlencoded" \
  *   -d "From=+15551234567" \
  *   -d "To=+15557654321" \
- *   -d "MediaUrl0=https://images.unsplash.com/photo-1526170375885-4d8ecf77b99f?auto=format&fit=crop&w=800&q=60"
+ *   -d "Body=START"
  */
 
 import { Buffer } from "buffer";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 
+import { GEMINI_TIMEOUT_MS, getDailyMessageCap, repliesPaused } from "../../../lib/config";
+import { consumeDailyQuota } from "../../../lib/daily-cap";
+import { normalizePracticalQuestion, parseGeminiJson } from "../../../lib/gemini-parse";
+import { parseKeyword } from "../../../lib/keywords";
+import { containsInappropriateContent, isOffTopicGreeting } from "../../../lib/moderation";
+import { getKvStore } from "../../../lib/store";
+import { getSubscriptionStatus, setSubscriptionStatus } from "../../../lib/subscribers";
+import { checkTwilioSignature } from "../../../lib/twilio-signature";
+import { twimlEmptyResponse, twimlMessageResponse } from "../../../lib/twiml";
+import { withTimeout } from "../../../lib/with-timeout";
+
 export const runtime = "nodejs";
+// Twilio gives up after about 15s. Give the function room for a slow photo fetch plus Gemini.
+export const maxDuration = 30;
+
+/** Thrown when the photo URL can't be downloaded. */
+class PhotoFetchError extends Error {}
+/** Thrown when the media isn't an image (video, audio). */
+class PhotoTypeError extends Error {}
 
 type ChatTurn = { role: "user" | "model"; text: string; at: number };
-type ConversationStore = Map<string, ChatTurn[]>;
 
-const conversationStore: ConversationStore =
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ((globalThis as any).__deInfluencerConversationStore as ConversationStore) ??
-  new Map<string, ChatTurn[]>();
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).__deInfluencerConversationStore = conversationStore;
+// TODO(phase 2): move conversation history to the same KV store as subscribers.
+const globalWithHistory = globalThis as unknown as { __deInfluencerConversationStore?: Map<string, ChatTurn[]> };
+const conversationStore: Map<string, ChatTurn[]> =
+  globalWithHistory.__deInfluencerConversationStore ?? new Map<string, ChatTurn[]>();
+globalWithHistory.__deInfluencerConversationStore = conversationStore;
 
-type GeminiRoastJson = {
-  item: string;
-  guessedPrice: number; // USD number, no currency symbol
-  amountSaved: number; // USD number, no currency symbol
-  sandra: string; // Cold logic + existential questioning
-  aziz: string; // High-energy, OBSERVATIONAL COMEDY IN CAPS
-  practicalQuestion:
-    | "Does a friend have one you can borrow?"
-    | "Can you rent this?";
-};
+const REDIRECT_MESSAGE = "Try asking me about something you're thinking of buying! 👔";
+const FALLBACK_MESSAGE = "Our roast machine tripped over its own shoelaces 🫠. Try again in a few minutes.";
+const PHOTO_FETCH_FAILED_MESSAGE = "We couldn't open that photo. Try sending it again?";
+const PHOTO_TYPE_MESSAGE = "We can only roast photos right now. Send a picture of the item! 📸";
+const WELCOME_MESSAGE =
+  "You're in! Text us anything you're thinking of buying, with or without a photo. Reply STOP to unsubscribe, HELP for help.";
+const SIGNUP_PROMPT_MESSAGE = "Text START to sign up for De-Influencer SMS. Reply STOP anytime to unsubscribe.";
+const HELP_MESSAGE =
+  "De-Influencer SMS: text us something you're thinking of buying (photo optional) and we'll roast it kindly. Reply STOP to unsubscribe. Questions: virginia@virginiamiller.com";
 
-/**
- * CONTENT MODERATION
- * Check for profanity, inappropriate language, rude tone
- */
-function containsInappropriateContent(text: string): boolean {
-  const profanityPatterns = [
-    /\bf[*u]ck/i,
-    /\bsh[*i]t/i,
-    /\bass\b/i,
-    /\bdamn/i,
-    /\bhell\b/i,
-    /\bcrap/i,
-    /\bpiss/i,
-    /\bcock/i,
-    /\bslut/i,
-    /\bbitch/i,
-    /\bwhore/i,
-    /\bgodd[*a]mn/i,
-  ];
+const MODEL_NAME = "gemini-2.5-flash";
 
-  const rudePatterns = [
-    /you suck/i,
-    /you're stupid/i,
-    /you're dumb/i,
-    /i hate you/i,
-    /go away/i,
-    /screw you/i,
-    /f\*\*\* off/i,
-    /f\*\*\* you/i,
-  ];
-
-  const allPatterns = [...profanityPatterns, ...rudePatterns];
-  return allPatterns.some((pattern) => pattern.test(text));
-}
-
-function escapeXml(input: string) {
-  return input
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-function getHistory(from: string) {
-  const existing = conversationStore.get(from) ?? [];
-  // keep the last 12 turns to limit token usage
-  return existing.slice(-12);
-}
-
-function setHistory(from: string, turns: ChatTurn[]) {
-  conversationStore.set(from, turns.slice(-12));
-}
-
-function extractJson(raw: string): string | null {
-  const start = raw.indexOf("{");
-  const end = raw.lastIndexOf("}");
-  if (start === -1 || end === -1 || end <= start) return null;
-  return raw.slice(start, end + 1);
-}
-
-function parseGeminiJson(raw: string): Partial<GeminiRoastJson> | null {
-  const jsonCandidate = extractJson(raw);
-  if (!jsonCandidate) return null;
-  try {
-    return JSON.parse(jsonCandidate) as Partial<GeminiRoastJson>;
-  } catch {
-    return null;
-  }
-}
-
-function normalizePracticalQuestion(
-  maybeQuestion: unknown,
-): GeminiRoastJson["practicalQuestion"] {
-  if (maybeQuestion === "Does a friend have one you can borrow?") {
-    return "Does a friend have one you can borrow?";
-  }
-  if (maybeQuestion === "Can you rent this?") {
-    return "Can you rent this?";
-  }
-  // Hard fallback to guarantee the required question.
-  return "Does a friend have one you can borrow?";
-}
-
-/** Twilio and some consoles probe the webhook with GET when saving; POST handles real SMS. */
-export async function GET() {
-  return new Response("ok", { status: 200 });
-}
-
-export async function POST(req: Request) {
-  const formData = await req.formData();
-  const from = formData.get("From")?.toString() ?? "";
-  const body = formData.get("Body")?.toString() ?? "";
-  const mediaUrl = formData.get("MediaUrl0")?.toString() ?? "";
-
-  if (!from) return new Response("Missing From", { status: 400 });
-
-  // ============================================
-  // SAFETY CHECK #1: Profanity/Rude Language
-  // ============================================
-  if (body && containsInappropriateContent(body)) {
-    const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Message>${escapeXml("Try asking me about something you're thinking of buying! 👔")}</Message>
-</Response>`;
-    return new Response(twiml, {
-      headers: { "Content-Type": "text/xml; charset=utf-8" },
-    });
-  }
-
-  // ============================================
-  // SAFETY CHECK #2: Random/Off-Topic Text
-  // ============================================
-  if (!mediaUrl && body) {
-    const trimmedBody = body.trim().toLowerCase();
-    const randomTopicPatterns = [
-      /^(hi|hello|hey|what's up|yo|sup)$/,
-      /^test/,
-      /^does this work/,
-      /^help/,
-      /^spam|test|random/,
-    ];
-
-    const isRandomTopic = randomTopicPatterns.some((pattern) =>
-      pattern.test(trimmedBody),
-    );
-
-    if (isRandomTopic && trimmedBody.length < 10) {
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Message>${escapeXml("Try asking me about something you're thinking of buying! 👔")}</Message>
-</Response>`;
-      return new Response(twiml, {
-        headers: { "Content-Type": "text/xml; charset=utf-8" },
-      });
-    }
-  }
-
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return new Response("Missing GEMINI_API_KEY", { status: 500 });
-  }
-
-  const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-
-  const basePrompt = `
+const BASE_PROMPT = `
 You are generating an SMS roast from a de-influencer perspective.
 
 ⚠️ SAFETY CHECKS (DO THESE FIRST):
@@ -228,18 +102,7 @@ Return STRICT JSON only (no markdown, no extra keys, no extra text) with exactly
 }
 `.trim();
 
-  const history = getHistory(from);
-  const now = Date.now();
-  const newHistory: ChatTurn[] = [
-    ...history,
-    ...(body ? [{ role: "user" as const, text: body, at: now }] : []),
-  ];
-
-  let smsText = "";
-
-  if (!mediaUrl) {
-    // Text-only conversation mode (no photo yet).
-    const convoPrompt = `
+const CHAT_PROMPT = `
 You are the "De-Influencer SMS" persona: 50% Sandra Hüller (logical/existential) and 50% Aziz Ansari (high-energy/observational).
 
 ⚠️ SAFETY CHECKS FIRST:
@@ -256,108 +119,210 @@ The user may ask if they should buy something (fashion/clothing related).
 Keep it SMS-length.
 `.trim();
 
-    const transcript = newHistory
-      .map((t) => `${t.role === "user" ? "User" : "You"}: ${t.text}`)
-      .join("\n");
+function getHistory(from: string) {
+  // keep the last 12 turns to limit token usage
+  return (conversationStore.get(from) ?? []).slice(-12);
+}
 
-    const result = await model.generateContent(
-      `${convoPrompt}\n\nConversation so far:\n${transcript}\n\nReply now:`,
-    );
-    smsText = result.response.text().trim();
+function setHistory(from: string, turns: ChatTurn[]) {
+  conversationStore.set(from, turns.slice(-12));
+}
 
-    // Save conversation turn.
-    const updated = [
-      ...newHistory,
-      { role: "model" as const, text: smsText, at: Date.now() },
-    ];
-    // TODO: Persist conversation + analytics to your database (instead of memory) for Vercel/serverless reliability.
-    setHistory(from, updated);
-  } else {
-    // Photo roast mode.
-    // Fetch the image so Gemini can analyze it.
-    const imageRes = await fetch(mediaUrl);
-    if (!imageRes.ok) {
-      return new Response("Failed to fetch MediaUrl0", { status: 400 });
-    }
+const twimlResponse = twimlMessageResponse;
 
-    const arrayBuffer = await imageRes.arrayBuffer();
-    const base64 = Buffer.from(arrayBuffer).toString("base64");
-    const contentType = imageRes.headers.get("content-type") ?? "image/jpeg";
-    const mimeType = contentType.startsWith("image/") ? contentType : "image/jpeg";
+function timeoutGuard<T>(promise: Promise<T>) {
+  return withTimeout(promise, GEMINI_TIMEOUT_MS, "Gemini");
+}
 
-    const result = await model.generateContent({
+async function fetchPhoto(mediaUrl: string, params: { accountSid?: string; authToken?: string }) {
+  const headers: Record<string, string> = {};
+  // Twilio-hosted media can require basic auth, so send the account credentials when we have them.
+  if (mediaUrl.startsWith("https://api.twilio.com/") && params.accountSid && params.authToken) {
+    headers.Authorization = `Basic ${Buffer.from(`${params.accountSid}:${params.authToken}`).toString("base64")}`;
+  }
+  return fetch(mediaUrl, { headers, signal: AbortSignal.timeout(8_000), cache: "no-store" });
+}
+
+/** Text-only conversation turn. */
+async function chatReply(model: ReturnType<GoogleGenerativeAI["getGenerativeModel"]>, from: string, body: string) {
+  const history = getHistory(from);
+  const newHistory: ChatTurn[] = [...history, { role: "user", text: body, at: Date.now() }];
+  const transcript = newHistory.map((t) => `${t.role === "user" ? "User" : "You"}: ${t.text}`).join("\n");
+
+  const result = await timeoutGuard(
+    model.generateContent(`${CHAT_PROMPT}\n\nConversation so far:\n${transcript}\n\nReply now:`),
+  );
+  const smsText = result.response.text().trim();
+
+  setHistory(from, [...newHistory, { role: "model", text: smsText, at: Date.now() }]);
+  return smsText;
+}
+
+/** Photo roast turn. Returns a redirect message when Gemini rejects the item. */
+async function photoReply(
+  model: ReturnType<GoogleGenerativeAI["getGenerativeModel"]>,
+  from: string,
+  body: string,
+  mediaUrl: string,
+): Promise<string> {
+  const imageRes = await fetchPhoto(mediaUrl, {
+    accountSid: process.env.TWILIO_ACCOUNT_SID,
+    authToken: process.env.TWILIO_AUTH_TOKEN,
+  });
+  if (!imageRes.ok) throw new PhotoFetchError(String(imageRes.status));
+
+  const contentType = imageRes.headers.get("content-type") ?? "";
+  if (!contentType.startsWith("image/")) throw new PhotoTypeError(contentType);
+
+  const base64 = Buffer.from(await imageRes.arrayBuffer()).toString("base64");
+
+  const result = await timeoutGuard(
+    model.generateContent({
       contents: [
         {
           role: "user",
           parts: [
-            { text: basePrompt },
+            { text: BASE_PROMPT },
             ...(body ? [{ text: `User context: ${body}` }] : []),
-            {
-              inlineData: {
-                data: base64,
-                mimeType,
-              },
-            },
+            { inlineData: { data: base64, mimeType: contentType } },
           ],
         },
       ],
-    });
+    }),
+  );
 
-    const rawText = result.response.text();
-    const parsed = parseGeminiJson(rawText);
+  const rawText = result.response.text();
+  const parsed = parseGeminiJson(rawText);
 
-    // ============================================
-    // SAFETY CHECK #3: Non-Fashion Items
-    // ============================================
-    // If Gemini detects a REJECTED item, it will return item: "REJECTED"
-    if (parsed?.item === "REJECTED") {
-      const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Message>${escapeXml("Try asking me about something you're thinking of buying! 👔")}</Message>
-</Response>`;
-      return new Response(twiml, {
-        headers: { "Content-Type": "text/xml; charset=utf-8" },
-      });
+  // SAFETY CHECK #3: Non-fashion items. Gemini returns item: "REJECTED" for these.
+  if (parsed?.item === "REJECTED") return REDIRECT_MESSAGE;
+
+  const practicalQuestion = normalizePracticalQuestion(parsed?.practicalQuestion);
+  const roastBody = [parsed?.sandra?.trim() ?? "", parsed?.aziz?.trim() ?? ""].filter(Boolean).join("\n\n");
+  // TODO(phase 2): persist parsed.amountSaved, item, guessedPrice with `from`.
+
+  const smsText = roastBody.length > 0 ? `${roastBody}\n${practicalQuestion}` : `${rawText}\n${practicalQuestion}`;
+  setHistory(from, [
+    ...getHistory(from),
+    { role: "user", text: body || "[photo]", at: Date.now() },
+    { role: "model", text: smsText, at: Date.now() },
+  ]);
+  return smsText;
+}
+
+export async function GET() {
+  return new Response("ok", { status: 200 });
+}
+
+export async function POST(req: Request) {
+  const formData = await req.formData();
+  const params: Record<string, string> = {};
+  formData.forEach((value, key) => {
+    params[key] = value.toString();
+  });
+
+  // Reject anything that wasn't signed by Twilio before reading further.
+  const signature = checkTwilioSignature(req, params);
+  if (!signature.ok) {
+    console.warn("[webhook] rejected request", { reason: signature.reason });
+    if (signature.reason === "missing-token") {
+      return new Response("Server misconfigured", { status: 500 });
     }
-
-    const practicalQuestion = normalizePracticalQuestion(
-      parsed?.practicalQuestion,
-    );
-    const sandraPart = parsed?.sandra ?? "";
-    const azizPart = parsed?.aziz ?? "";
-    const amountSaved =
-      typeof parsed?.amountSaved === "number" ? parsed.amountSaved : null;
-
-    // TODO: Persist `amountSaved` (and metadata like `from`, `item`, `guessedPrice`) to your database.
-    //       This is intentionally left out until we wire storage.
-    void amountSaved;
-
-    const roastBody = [sandraPart.trim(), azizPart.trim()]
-      .filter(Boolean)
-      .join("\n\n");
-    smsText =
-      roastBody.length > 0
-        ? `${roastBody}\n${practicalQuestion}`
-        : `${rawText}\n${practicalQuestion}`;
-
-    const updated = [
-      ...newHistory,
-      { role: "model" as const, text: smsText, at: Date.now() },
-    ];
-    // TODO: Persist conversation + analytics to your database (instead of memory) for Vercel/serverless reliability.
-    setHistory(from, updated);
+    return new Response("Forbidden", { status: 403 });
   }
 
-  // Twilio Webhooks typically expect TwiML back.
-  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
-<Response>
-  <Message>${escapeXml(smsText)}</Message>
-</Response>`;
+  const from = params.From ?? "";
+  const body = params.Body ?? "";
+  const mediaUrl = params.MediaUrl0 ?? "";
+  if (!from) return new Response("Missing From", { status: 400 });
 
-  // Optional logging (safe, remove if noisy).
-  // console.log({ from, mediaUrl, body });
+  try {
+    return await handleMessage({ from, body, mediaUrl });
+  } catch (error) {
+    // Anything unexpected (KV down, Gemini error we didn't anticipate) still gets an answer.
+    console.error("[webhook] unhandled error", { message: error instanceof Error ? error.message : String(error) });
+    return twimlResponse(FALLBACK_MESSAGE);
+  }
+}
 
-  return new Response(twiml, {
-    headers: { "Content-Type": "text/xml; charset=utf-8" },
-  });
+async function handleMessage({ from, body, mediaUrl }: { from: string; body: string; mediaUrl: string }) {
+  const store = getKvStore();
+  const keyword = body ? parseKeyword(body) : null;
+
+  // STOP is always honored, even when replies are paused or the cap is hit. No reply is sent.
+  if (keyword === "STOP") {
+    await setSubscriptionStatus(store, from, "stopped");
+    console.info("[webhook] outcome", { outcome: "stopped" });
+    return twimlEmptyResponse();
+  }
+
+  if (repliesPaused()) {
+    console.info("[webhook] outcome", { outcome: "paused" });
+    return twimlEmptyResponse();
+  }
+
+  // Every message that would get a reply counts against today's cap.
+  const quota = await consumeDailyQuota(store, getDailyMessageCap());
+  if (!quota.allowed) {
+    console.warn("[webhook] outcome", { outcome: "cap-reached", count: quota.count, cap: quota.cap });
+    return twimlEmptyResponse();
+  }
+
+  if (keyword === "START") {
+    await setSubscriptionStatus(store, from, "active");
+    console.info("[webhook] outcome", { outcome: "subscribed" });
+    return twimlResponse(WELCOME_MESSAGE);
+  }
+  if (keyword === "HELP") {
+    return twimlResponse(HELP_MESSAGE);
+  }
+
+  const status = await getSubscriptionStatus(store, from);
+  if (status === "stopped") {
+    // After STOP, carriers forbid further messages until the user re-opts in with START.
+    console.info("[webhook] outcome", { outcome: "stopped-sender" });
+    return twimlEmptyResponse();
+  }
+  if (status === null) {
+    return twimlResponse(SIGNUP_PROMPT_MESSAGE);
+  }
+
+  // SAFETY CHECK #1: Profanity/rude language
+  if (body && containsInappropriateContent(body)) {
+    return twimlResponse(REDIRECT_MESSAGE);
+  }
+  // SAFETY CHECK #2: Random/off-topic text
+  if (!mediaUrl && body && isOffTopicGreeting(body)) {
+    return twimlResponse(REDIRECT_MESSAGE);
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    console.error("[webhook] GEMINI_API_KEY is not set");
+    return twimlResponse(FALLBACK_MESSAGE);
+  }
+  const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({ model: MODEL_NAME });
+
+  try {
+    const smsText = mediaUrl
+      ? await photoReply(model, from, body, mediaUrl)
+      : await chatReply(model, from, body);
+
+    console.info("[webhook] outcome", { outcome: mediaUrl ? "photo-roast" : "chat", count: quota.count });
+    return twimlResponse(smsText);
+  } catch (error) {
+    if (error instanceof PhotoFetchError) {
+      console.warn("[webhook] outcome", { outcome: "photo-fetch-failed", status: error.message });
+      return twimlResponse(PHOTO_FETCH_FAILED_MESSAGE);
+    }
+    if (error instanceof PhotoTypeError) {
+      console.info("[webhook] outcome", { outcome: "non-image-media" });
+      return twimlResponse(PHOTO_TYPE_MESSAGE);
+    }
+    console.error("[webhook] outcome", {
+      outcome: "gemini-error",
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return twimlResponse(FALLBACK_MESSAGE);
+  }
 }

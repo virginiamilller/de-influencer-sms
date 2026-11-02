@@ -24,6 +24,28 @@ GEMINI_API_KEY=your_key_here
 
 Get a key from [Google AI Studio](https://aistudio.google.com/).
 
+### Environment variables
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `GEMINI_API_KEY` | yes | Gemini calls |
+| `TWILIO_AUTH_TOKEN` | yes in production | Verifies `X-Twilio-Signature` on every webhook POST. Missing token = 500. |
+| `TWILIO_ACCOUNT_SID` | recommended | Used to fetch Twilio-hosted MMS media with basic auth |
+| `PUBLIC_WEBHOOK_URL` | recommended | Exact public URL Twilio posts to, e.g. `https://…/api/webhook`. Used for signature checks. |
+| `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` | yes for beta | Shared store for opt-in status and the daily cap. (`KV_REST_API_URL` / `KV_REST_API_TOKEN` also work.) Without them the app falls back to in-memory state, which is **not** reliable on Vercel. |
+| `DAILY_MESSAGE_CAP` | no | Max messages processed per UTC day. Default **50**. Over the cap the webhook sends no reply. |
+| `PAUSE_REPLIES` | no | Set to `1` to stop all replies (kill switch). STOP is still honored. |
+| `HEALTH_CHECK_TOKEN` | no | Required to call `/api/health/gemini` in production. Send as `Authorization: Bearer <token>`. |
+| `TWILIO_SKIP_SIGNATURE_CHECK` | no | Set to `1` for local curl testing only. Ignored when `NODE_ENV=production`. |
+
+## Opt-in flow
+
+Matches the copy on `/sms`:
+
+- A new number gets "Text START to sign up" and no roast until it texts **START**.
+- **STOP** (also STOPALL, UNSUBSCRIBE, CANCEL, END, QUIT) unsubscribes. The webhook sends no reply and ignores later messages until the number texts **START** again.
+- **HELP** (or INFO) returns the help text.
+
 ## Run locally
 
 ```bash
@@ -44,7 +66,7 @@ A working key returns JSON with `"ok": true`.
 
 ## Test the SMS webhook (no Twilio required)
 
-The webhook accepts `application/x-www-form-urlencoded` body fields like Twilio sends (`From`, `Body`, optional `MediaUrl0`). Example with a public test image:
+The webhook accepts `application/x-www-form-urlencoded` body fields like Twilio sends (`From`, `Body`, optional `MediaUrl0`). For local curl, add `TWILIO_SKIP_SIGNATURE_CHECK=1` to `.env.local`, and send `Body=START` first so the number is opted in. Example with a public test image:
 
 ```bash
 curl -X POST http://localhost:3004/api/webhook \
@@ -96,3 +118,4 @@ Point your Twilio phone number’s **Messaging webhook** to your deployed URL, e
 | `npm run build` | Production build  |
 | `npm run start` | Run production build |
 | `npm run lint`  | ESLint             |
+| `npm test`      | Vitest unit and webhook tests |
