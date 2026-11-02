@@ -107,7 +107,7 @@ describe("opt-in and opt-out", () => {
   });
 
   it("subscribes on START and then roasts", async () => {
-    expect(message(await send("START"))).toContain("You're in!");
+    expect(message(await send("START"))).toContain("You've opted in");
     mockGenerate.mockResolvedValueOnce(geminiText("Sandra reply\n\nAziz reply"));
     const xml = await send("should I buy this blazer");
     expect(message(xml)).toContain("Sandra reply");
@@ -125,7 +125,7 @@ describe("opt-in and opt-out", () => {
     expect(await send("should I buy this")).not.toContain("<Message>");
     expect(mockGenerate).not.toHaveBeenCalled();
 
-    expect(message(await send("START"))).toContain("You're in!");
+    expect(message(await send("START"))).toContain("You've opted in");
   });
 
   it("still honors STOP when the daily cap is exhausted", async () => {
@@ -139,7 +139,7 @@ describe("daily cap", () => {
   it("goes silent after the cap is reached", async () => {
     process.env.DAILY_MESSAGE_CAP = "2";
     mockGenerate.mockResolvedValue(geminiText("A reply"));
-    expect(message(await send("START"))).toContain("You're in!"); // 1
+    expect(message(await send("START"))).toContain("You've opted in"); // 1
     expect(message(await send("should I buy this coat"))).toContain("A reply"); // 2
     expect(await send("should I buy this other coat")).toBe(
       `<?xml version="1.0" encoding="UTF-8"?>\n<Response/>`,

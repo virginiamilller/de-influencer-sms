@@ -46,8 +46,9 @@ const REDIRECT_MESSAGE = "Try asking me about something you're thinking of buyin
 const FALLBACK_MESSAGE = "Our roast machine tripped over its own shoelaces 🫠. Try again in a few minutes.";
 const PHOTO_FETCH_FAILED_MESSAGE = "We couldn't open that photo. Try sending it again?";
 const PHOTO_TYPE_MESSAGE = "We can only roast photos right now. Send a picture of the item! 📸";
+// Opt-in confirmation wording as approved (matches "agreement sms.pdf"): program, frequency, rates, STOP/HELP.
 const WELCOME_MESSAGE =
-  "You're in! Text us anything you're thinking of buying, with or without a photo. Reply STOP to unsubscribe, HELP for help.";
+  "Hey! 👋 You've opted in to De-Influencer SMS. Reply with any item you're thinking of buying and I'll talk you out of it (or not 😅). Msg frequency varies. Msg & data rates may apply. Reply STOP to unsubscribe, HELP for help.";
 const SIGNUP_PROMPT_MESSAGE = "Text START to sign up for De-Influencer SMS. Reply STOP anytime to unsubscribe.";
 const HELP_MESSAGE =
   "De-Influencer SMS: text us something you're thinking of buying (photo optional) and we'll roast it kindly. Reply STOP to unsubscribe. Questions: virginia@virginiamiller.com";
